@@ -127,6 +127,7 @@ func (server *Server) readRequest(c codec.Codec) (*request, error) {
 	return req, nil
 }
 
+// 输出服务端响应
 func (server *Server) sendResponse(c codec.Codec, h *codec.Header, r any, sending *sync.Mutex) {
 	sending.Lock()
 	defer sending.Unlock()
@@ -138,7 +139,7 @@ func (server *Server) sendResponse(c codec.Codec, h *codec.Header, r any, sendin
 
 func (server *Server) handleRequest(f codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
-	//log.Println(req.h, req.argv.Elem())
+	log.Println(req.h, req.argv.Elem())
 	req.reply = reflect.ValueOf(fmt.Sprintf("go-rpc resp %d", req.h.Seq)) // 返回序列号作为响应
 	server.sendResponse(f, req.h, req.reply.Interface(), sending)
 }

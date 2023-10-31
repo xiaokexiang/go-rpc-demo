@@ -1,12 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"go-rpc/codec"
 	"go-rpc/server"
 	"log"
+	"main/client"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -19,26 +19,20 @@ func startServer(addr chan string) {
 func main() {
 	addr := make(chan string)
 	go startServer(addr)
-	conn, _ := net.Dial("tcp", <-addr)
-	defer func() {
-		_ = conn.Close()
-	}()
+	c, _ := client.Dial("tcp", <-addr)
 	time.Sleep(time.Second)
 
-	_ = json.NewEncoder(conn).Encode(server.DefaultOption) // 输出option到服务端
-	c := codec.NewJsonCodec(conn)
-
+	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
-		h := &codec.Header{
-			ServiceMethod: "Foo.Sum",
-			Seq:           uint64(i),
-		}
-		send := fmt.Sprintf("go-rpc req %d", h.Seq)
-		log.Println("client send msg: ", send)
-		_ = c.Write(h, send)
-		_ = c.ReadHeader(h) // 需要先消费返回的header，因为write是先输出header后输出body的
-		var reply string
-		_ = c.ReadBody(&reply)
-		log.Println("server reply:", reply)
+		wg.Add(1)
+		go func(a int) { // 迭代变量捕获
+			args := fmt.Sprintf("rpc req %d", a)
+			var reply string
+			if err := c.Sync("Foo.sum", args, &reply); err != nil {
+				log.Fatalln("call Foo.sum error: ", err)
+			}
+			log.Println("reply: ", reply)
+		}(i)
 	}
+	wg.Wait()
 }

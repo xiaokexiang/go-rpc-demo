@@ -20,7 +20,7 @@ type Codec interface {
 }
 
 type Type string
-type NewCodecFunc func(io.ReadWriteCloser) Codec
+type NewCodecFunc func(io.ReadWriteCloser) Codec // 用来创建codec的类型，传入conn就能创建codec
 
 const (
 	JsonType Type = "application/json" // 使用json作为序列化方式
