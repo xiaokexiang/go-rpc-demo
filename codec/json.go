@@ -47,9 +47,9 @@ func (c *JsonCodec) Close() error {
 func NewJsonCodec(conn io.ReadWriteCloser) Codec {
 	buf := bufio.NewWriter(conn)
 	return &JsonCodec{
-		conn: conn,
-		buf:  buf,
-		dec:  json.NewDecoder(conn),
-		enc:  json.NewEncoder(buf),
+		conn: conn,                  // 连接
+		buf:  buf,                   // 缓冲区满后才会写入到内核
+		dec:  json.NewDecoder(conn), // 从conn中读取
+		enc:  json.NewEncoder(buf),  // 会输出到buf中
 	}
 }

@@ -1,19 +1,24 @@
 package main
 
 import (
-	"fmt"
+	"go-rpc/client"
 	"go-rpc/server"
+	"go-rpc/service"
 	"log"
-	"main/client"
 	"net"
 	"sync"
 	"time"
 )
 
 func startServer(addr chan string) {
+	var foo service.Foo
+	s := server.DefaultServer
+	if err := s.Register(&foo); err != nil {
+		log.Fatalln("rpc server register error: ", err)
+	}
 	listen, _ := net.Listen("tcp", ":0")
-	addr <- listen.Addr().String()    // 传输地址给客户端
-	server.NewServer().Accept(listen) // 服务端监听端口，接受客户端请求
+	addr <- listen.Addr().String() // 传输地址给客户端
+	s.Accept(listen)               // 服务端监听端口，接受客户端请求
 }
 
 func main() {
@@ -26,12 +31,12 @@ func main() {
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(a int) { // 迭代变量捕获
-			args := fmt.Sprintf("rpc req %d", a)
-			var reply string
-			if err := c.Sync("Foo.sum", args, &reply); err != nil {
+			args := &service.Args{Num1: a, Num2: a * a}
+			var reply int
+			if err := c.Sync("Foo.Sum", args, &reply); err != nil {
 				log.Fatalln("call Foo.sum error: ", err)
 			}
-			log.Println("reply: ", reply)
+			log.Printf("rpc client, result: %d + %d = %d", args.Num1, args.Num2, reply)
 		}(i)
 	}
 	wg.Wait()

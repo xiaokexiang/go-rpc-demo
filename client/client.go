@@ -110,11 +110,11 @@ func (client *Client) receive() {
 		switch {
 		case call == nil:
 			// 服务端处理了请求，但是客户端这边被取消了
-			err = client.c.ReadBody(nil)
+			err = errors.New("client cancels request")
 		case h.Error != "":
 			// 服务端处理出错
-			call.Error = fmt.Errorf(h.Error)
-			err = client.c.ReadBody(nil)
+			err = errors.New(h.Error)
+			call.Error = err
 			call.done()
 		default:
 			err = client.c.ReadBody(call.Reply) // 将输出写入到reply中

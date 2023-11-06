@@ -2,12 +2,13 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"go-rpc/codec"
 	"io"
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -28,7 +29,46 @@ var DefaultOption = &Option{
 	CodecType:   codec.JsonType,
 }
 
-type Server struct{}
+type Server struct {
+	serviceMap sync.Map // 并发安全，注册service
+}
+
+func (server *Server) Register(service any) error {
+	s := NewService(service)
+	if _, dup := server.serviceMap.LoadOrStore(s.name, s); dup {
+		return errors.New("rpc: service already defined: " + s.name)
+	}
+	return nil
+}
+
+//func Register(service any) error {
+//	return DefaultServer.register(service)
+//}
+
+// 寻找service中的方法并返回用于调用,
+func (server *Server) findService(serviceMethod string) (service *Service, method *methodType, err error) {
+	// 校验 serviceMethod Foo.sum 并切割获取service和method名称
+	index := strings.LastIndex(serviceMethod, ".")
+	if index < 0 {
+		err = errors.New("rpc server: invalid service method")
+		return
+	}
+	serviceName, methodName := serviceMethod[:index], serviceMethod[index+1:]
+	// 获取service
+	svc, ok := server.serviceMap.Load(serviceName)
+	if !ok {
+		err = errors.New("rpc server: can't find service " + serviceName)
+		return
+	}
+	// 查找service中的method
+	service = svc.(*Service)
+	method = service.Method[methodName]
+	if method == nil {
+		err = errors.New("rpc server: can't find method " + methodName)
+		return
+	}
+	return
+}
 
 func NewServer() *Server {
 	return &Server{}
@@ -96,13 +136,15 @@ func (server *Server) serverCodec(f codec.Codec) {
 type request struct {
 	h           *codec.Header // 请求的header
 	argv, reply reflect.Value // 请求的参数和响应参数
+	mType       *methodType
+	service     *Service
 }
 
 // 解析header
 func (server *Server) readRequestHeader(c codec.Codec) (*codec.Header, error) {
 	var h codec.Header
 	if err := c.ReadHeader(&h); err != nil {
-		if err != io.EOF && err != io.ErrUnexpectedEOF {
+		if err != io.EOF && !errors.Is(err, io.ErrUnexpectedEOF) {
 			log.Println("rpc server readRequestHeader: ", err)
 		}
 		return nil, err
@@ -119,9 +161,18 @@ func (server *Server) readRequest(c codec.Codec) (*request, error) {
 	req := &request{
 		h: header,
 	}
-	// 判断参数类型，这里需要使用反射，暂时先考虑为string
-	req.argv = reflect.New(reflect.TypeOf(""))
-	if err = c.ReadBody(req.argv.Interface()); err != nil {
+	req.service, req.mType, err = server.findService(header.ServiceMethod)
+	if err != nil {
+		return req, err
+	}
+	req.argv = req.mType.NewArgv()
+	req.reply = req.mType.NewReply()
+	// 保证入参的argv是指针类型，因为ReadBody方法需要传入指针类型
+	argvI := req.argv.Interface()
+	if req.argv.Type().Kind() != reflect.Pointer {
+		argvI = req.argv.Addr().Interface()
+	}
+	if err = c.ReadBody(argvI); err != nil {
 		log.Println("rpc server -> read argv ")
 	}
 	return req, nil
@@ -131,7 +182,6 @@ func (server *Server) readRequest(c codec.Codec) (*request, error) {
 func (server *Server) sendResponse(c codec.Codec, h *codec.Header, r any, sending *sync.Mutex) {
 	sending.Lock()
 	defer sending.Unlock()
-
 	if err := c.Write(h, r); err != nil { // 加锁依次输出响应
 		log.Println("rpc server: write response error: ", err)
 	}
@@ -139,7 +189,12 @@ func (server *Server) sendResponse(c codec.Codec, h *codec.Header, r any, sendin
 
 func (server *Server) handleRequest(f codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
-	log.Println(req.h, req.argv.Elem())
-	req.reply = reflect.ValueOf(fmt.Sprintf("go-rpc resp %d", req.h.Seq)) // 返回序列号作为响应
+	log.Println("rpc server, handler request: ", req.h, req.argv)
+	err := req.service.Call(req.mType, req.argv, req.reply) // 真正调用service中的method方法
+	if err != nil {
+		req.h.Error = err.Error()
+		server.sendResponse(f, req.h, invalidRequest, sending)
+		return
+	}
 	server.sendResponse(f, req.h, req.reply.Interface(), sending)
 }
