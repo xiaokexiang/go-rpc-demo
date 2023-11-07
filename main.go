@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"go-rpc/client"
 	"go-rpc/server"
 	"go-rpc/service"
@@ -24,7 +25,10 @@ func startServer(addr chan string) {
 func main() {
 	addr := make(chan string)
 	go startServer(addr)
-	c, _ := client.Dial("tcp", <-addr)
+	c, err := client.Dial("tcp", <-addr, nil)
+	if err != nil {
+		log.Fatalf("rpc client: connect rpc server error: %s\n", err.Error())
+	}
 	time.Sleep(time.Second)
 
 	var wg sync.WaitGroup
@@ -33,7 +37,9 @@ func main() {
 		go func(a int) { // 迭代变量捕获
 			args := &service.Args{Num1: a, Num2: a * a}
 			var reply int
-			if err := c.Sync("Foo.Sum", args, &reply); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := c.Sync(ctx, "Foo.Sum", args, &reply); err != nil {
 				log.Fatalln("call Foo.sum error: ", err)
 			}
 			log.Printf("rpc client, result: %d + %d = %d", args.Num1, args.Num2, reply)

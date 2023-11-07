@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // Call 用来承载rpc所需要的信息
@@ -42,6 +44,11 @@ type Client struct {
 var _ io.Closer = (*Client)(nil)
 
 var ErrShutDown = errors.New("connection is shutdown")
+
+type clientResult struct {
+	client *Client
+	err    error
+}
 
 // Close 关闭客户端
 func (client *Client) Close() error {
@@ -170,12 +177,16 @@ func parseOptions(opts ...*server.Option) (*server.Option, error) {
 	return option, nil
 }
 
-func Dial(network, address string, opts ...*server.Option) (client *Client, err error) {
+func Dial(network, address string, options ...*server.Option) (*Client, error) {
+	return dialTimeout(NewClient, network, address, options...)
+}
+
+func dialTimeout(newClient func(conn net.Conn, opt *server.Option) (*Client, error), network, address string, opts ...*server.Option) (client *Client, err error) {
 	opt, err := parseOptions(opts...)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.Dial(network, address)
+	conn, err := net.DialTimeout(network, address, opt.ConnectTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +195,24 @@ func Dial(network, address string, opts ...*server.Option) (client *Client, err 
 			_ = conn.Close()
 		}
 	}()
-	return NewClient(conn, opt)
+	ch := make(chan clientResult)
+	go func() {
+		client, err := newClient(conn, opt)
+		ch <- clientResult{
+			client: client,
+			err:    err,
+		}
+	}()
+	if opt.ConnectTimeout == 0 {
+		result := <-ch
+		return result.client, result.err
+	}
+	select {
+	case <-time.After(opt.ConnectTimeout): // 等待指定时间后超时
+		return nil, fmt.Errorf("rpc client: connect timeout within %s", opt.ConnectTimeout)
+	case result := <-ch:
+		return result.client, result.err
+	}
 }
 
 func (client *Client) send(call *Call) {
@@ -227,8 +255,13 @@ func (client *Client) Async(serviceMethod string, args, reply any, done chan *Ca
 }
 
 // Sync 同步调用，等待返回
-func (client *Client) Sync(serviceMethod string, args, reply any) error {
-	async := client.Async(serviceMethod, args, reply, make(chan *Call, 1))
-	call := <-async.Done
-	return call.Error
+func (client *Client) Sync(ctx context.Context, serviceMethod string, args, reply any) error {
+	call := client.Async(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	case <-ctx.Done(): // 说明是通过context取消的
+		client.removeCall(call.Seq)
+		return errors.New("rpc client: call failed: " + ctx.Err().Error())
+	case c := <-call.Done: // 说明是client任务执行玩取消的
+		return c.Error
+	}
 }

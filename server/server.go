@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go-rpc/codec"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 const MagicNumber = 0x3bef5c // 魔数
@@ -20,13 +22,17 @@ const MagicNumber = 0x3bef5c // 魔数
 */
 
 type Option struct {
-	MagicNumber int        // 表明这是一个rpc请求
-	CodecType   codec.Type // client使用何种方式来对body进行编码
+	MagicNumber    int           // 表明这是一个rpc请求
+	CodecType      codec.Type    // client使用何种方式来对body进行编码
+	ConnectTimeout time.Duration // 连接超时
+	HandlerTimeout time.Duration // 处理超时
 }
 
 var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   codec.JsonType,
+	MagicNumber:    MagicNumber,
+	CodecType:      codec.JsonType,
+	ConnectTimeout: 5 * time.Second,
+	HandlerTimeout: 5 * time.Second,
 }
 
 type Server struct {
@@ -105,13 +111,13 @@ func (server *Server) ServerConn(conn io.ReadWriteCloser) {
 		log.Printf("rpc server -> no impl by codecType: %s\n", option.CodecType)
 		return
 	}
-	server.serverCodec(f(conn))
+	server.serverCodec(f(conn), option.HandlerTimeout)
 }
 
 var invalidRequest = struct{}{}
 
 // 一次连接可能有多个请求，所以需要for循环等待，直到错误发生退出
-func (server *Server) serverCodec(f codec.Codec) {
+func (server *Server) serverCodec(f codec.Codec, timeout time.Duration) {
 	sending := new(sync.Mutex) // 保证response有序
 	wg := new(sync.WaitGroup)
 	// 允许一次连接中，接收多个请求，即多个header和body
@@ -127,7 +133,7 @@ func (server *Server) serverCodec(f codec.Codec) {
 			continue
 		}
 		wg.Add(1)
-		go server.handleRequest(f, req, sending, wg) // 协程处理
+		go server.handleRequest(f, req, sending, wg, timeout) // 协程处理
 	}
 	wg.Wait()
 	_ = f.Close()
@@ -187,14 +193,33 @@ func (server *Server) sendResponse(c codec.Codec, h *codec.Header, r any, sendin
 	}
 }
 
-func (server *Server) handleRequest(f codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (server *Server) handleRequest(f codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
+	called := make(chan struct{})
+	sent := make(chan struct{})
 	log.Println("rpc server, handler request: ", req.h, req.argv)
-	err := req.service.Call(req.mType, req.argv, req.reply) // 真正调用service中的method方法
-	if err != nil {
-		req.h.Error = err.Error()
-		server.sendResponse(f, req.h, invalidRequest, sending)
+	go func() {
+		err := req.service.Call(req.mType, req.argv, req.reply) // 真正调用service中的method方法
+		time.Sleep(10 * time.Second)
+		called <- struct{}{}
+		if err != nil {
+			req.h.Error = err.Error()
+			server.sendResponse(f, req.h, invalidRequest, sending)
+			return
+		}
+		server.sendResponse(f, req.h, req.reply.Interface(), sending)
+		sent <- struct{}{}
+	}()
+	if timeout == 0 {
+		<-called
+		<-sent
 		return
 	}
-	server.sendResponse(f, req.h, req.reply.Interface(), sending)
+	select {
+	case <-time.After(timeout): // 如果先于called执行，说明called超时，那么直接调用响应返回
+		req.h.Error = fmt.Sprintf("rpc server: request handler timeout: expect within %s", timeout)
+		server.sendResponse(f, req.h, invalidRequest, sending)
+	case <-called: // 如果先于time.After执行，说明called没有超时，那么等待sent执行完毕
+		<-sent
+	}
 }

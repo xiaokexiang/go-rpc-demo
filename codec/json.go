@@ -16,7 +16,7 @@ type JsonCodec struct {
 }
 
 func (c *JsonCodec) ReadHeader(h *Header) error {
-	return c.dec.Decode(h)
+	return c.dec.Decode(h) // 从conn(json.NewDecoder(conn))中读取header
 }
 func (c *JsonCodec) ReadBody(body any) error {
 	return c.dec.Decode(body)
@@ -28,7 +28,7 @@ func (c *JsonCodec) Write(h *Header, body any) (err error) {
 			_ = c.Close()
 		}
 	}()
-	if err := c.enc.Encode(h); err != nil {
+	if err := c.enc.Encode(h); err != nil { // 输出到conn(json.NewEncoder(conn))中
 		log.Println("rpc code -> json encoding header error: ", err)
 		return err
 	}
