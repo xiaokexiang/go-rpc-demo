@@ -7,34 +7,48 @@ import (
 	"go-rpc/service"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
 
-func startServer(addr chan string) {
-	var foo service.Foo
-	s := server.DefaultServer
-	if err := s.Register(&foo); err != nil {
-		log.Fatalln("rpc server register error: ", err)
-	}
-	listen, _ := net.Listen("tcp", ":0")
-	addr <- listen.Addr().String() // 传输地址给客户端
-	s.Accept(listen)               // 服务端监听端口，接受客户端请求
-}
-
 func main() {
 	addr := make(chan string)
-	go startServer(addr)
-	c, err := client.Dial("tcp", <-addr, nil)
-	if err != nil {
-		log.Fatalf("rpc client: connect rpc server error: %s\n", err.Error())
-	}
-	time.Sleep(time.Second)
+	protocol := "http" // or tcp
+	go startClient(protocol, addr)
+	startServer(protocol, addr)
+}
 
+func startServer(protocol string, addr chan string) {
+	var foo service.Foo
+	listen, _ := net.Listen("tcp", ":0")
+	s := server.DefaultServer
+	_ = s.Register(&foo)
+	log.Println("rpc server start at: ", listen.Addr().String())
+	addr <- listen.Addr().String()
+	switch protocol {
+	case "http":
+		_ = http.Serve(listen, s)
+	default:
+		s.Accept(listen)
+	}
+}
+
+func startClient(protocol string, addr chan string) {
+	var c *client.Client
+	switch protocol {
+	case "http":
+		c, _ = client.DialHTTP("tcp", <-addr, nil)
+	default:
+		c, _ = client.Dial("tcp", <-addr, nil)
+	}
+	defer c.Close()
+	time.Sleep(time.Second)
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		go func(a int) { // 迭代变量捕获
+		go func(a int) {
+			defer wg.Done()
 			args := &service.Args{Num1: a, Num2: a * a}
 			var reply int
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)

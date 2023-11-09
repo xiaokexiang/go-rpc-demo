@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -263,5 +266,37 @@ func (client *Client) Sync(ctx context.Context, serviceMethod string, args, repl
 		return errors.New("rpc client: call failed: " + ctx.Err().Error())
 	case c := <-call.Done: // 说明是client任务执行玩取消的
 		return c.Error
+	}
+}
+
+func NewHttpClient(conn net.Conn, opt *server.Option) (*Client, error) {
+	_, _ = io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", server.DefaultRpcPath)) // 指定访问方法是CONNECT
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err == nil && response.Status == server.Connected {
+		return NewClient(conn, opt)
+	}
+	if err == nil {
+		err = errors.New("unexpected HTTP response: " + response.Status)
+	}
+	return nil, err
+}
+
+func DialHTTP(network, address string, opts ...*server.Option) (*Client, error) {
+	return dialTimeout(NewHttpClient, network, address, opts...)
+}
+
+// XDial http@10.0.0.1:7001, tcp@10.0.0.1:9999, unix@/tmp/geerpc.sock
+func XDial(rpcAddr string, opts ...*server.Option) (*Client, error) {
+	parts := strings.Split(rpcAddr, "@")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client err: wrong format '%s', expect protocol@addr", rpcAddr)
+	}
+	protocol, addr := parts[0], parts[1]
+	switch protocol {
+	case "http":
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		// tcp, unix or other transport protocol
+		return Dial(protocol, addr, opts...)
 	}
 }

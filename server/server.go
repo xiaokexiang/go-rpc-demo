@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -31,8 +32,8 @@ type Option struct {
 var DefaultOption = &Option{
 	MagicNumber:    MagicNumber,
 	CodecType:      codec.JsonType,
-	ConnectTimeout: 5 * time.Second,
-	HandlerTimeout: 5 * time.Second,
+	ConnectTimeout: 500 * time.Second,
+	HandlerTimeout: 500 * time.Second,
 }
 
 type Server struct {
@@ -200,7 +201,6 @@ func (server *Server) handleRequest(f codec.Codec, req *request, sending *sync.M
 	log.Println("rpc server, handler request: ", req.h, req.argv)
 	go func() {
 		err := req.service.Call(req.mType, req.argv, req.reply) // 真正调用service中的method方法
-		time.Sleep(10 * time.Second)
 		called <- struct{}{}
 		if err != nil {
 			req.h.Error = err.Error()
@@ -222,4 +222,25 @@ func (server *Server) handleRequest(f codec.Codec, req *request, sending *sync.M
 	case <-called: // 如果先于time.After执行，说明called没有超时，那么等待sent执行完毕
 		<-sent
 	}
+}
+
+const (
+	Connected      = "200 Connected to rpc server"
+	DefaultRpcPath = "/_go_rpc_"
+)
+
+func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "CONNECT" {
+		w.Header().Set("Content-type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_, _ = io.WriteString(w, "405 must CONNECT\n")
+		return
+	}
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		log.Print("rpc hijacking ", req.RemoteAddr, ": ", err.Error())
+		return
+	}
+	_, _ = io.WriteString(conn, "HTTP/1.0 "+Connected+"\n\n")
+	server.ServerConn(conn)
 }
