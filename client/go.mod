@@ -11,4 +11,5 @@ replace (
 require (
 	go-rpc/codec v0.0.1
 	go-rpc/server v0.0.1
+	go-rpc/service v0.0.1
 )

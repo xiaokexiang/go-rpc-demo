@@ -12,7 +12,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -218,6 +217,35 @@ func dialTimeout(newClient func(conn net.Conn, opt *server.Option) (*Client, err
 	}
 }
 
+// Sync 同步调用，等待返回
+func (client *Client) Sync(ctx context.Context, serviceMethod string, args, reply any) error {
+	call := client.Async(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	case <-ctx.Done(): // 说明是通过context取消的
+		client.removeCall(call.Seq)
+		return errors.New("rpc client: call failed: " + ctx.Err().Error())
+	case c := <-call.Done: // 说明是client任务执行玩取消的
+		return c.Error
+	}
+}
+
+// Async 异步调用，返回call实例
+func (client *Client) Async(serviceMethod string, args, reply any, done chan *Call) *Call {
+	if done == nil {
+		done = make(chan *Call, 10) // 带缓存的通道
+	} else if cap(done) == 0 {
+		log.Panic("rpc client done channel is unbuffered")
+	}
+	c := &Call{
+		ServiceMethod: serviceMethod,
+		Args:          args,
+		Reply:         reply,
+		Done:          done,
+	}
+	client.send(c)
+	return c
+}
+
 func (client *Client) send(call *Call) {
 	client.sending.Lock()
 	defer client.sending.Unlock()
@@ -240,33 +268,8 @@ func (client *Client) send(call *Call) {
 	}
 }
 
-// Async 异步调用，返回call实例
-func (client *Client) Async(serviceMethod string, args, reply any, done chan *Call) *Call {
-	if done == nil {
-		done = make(chan *Call, 10) // 带缓存的通道
-	} else if cap(done) == 0 {
-		log.Panic("rpc client done channel is unbuffered")
-	}
-	c := &Call{
-		ServiceMethod: serviceMethod,
-		Args:          args,
-		Reply:         reply,
-		Done:          done,
-	}
-	client.send(c)
-	return c
-}
-
-// Sync 同步调用，等待返回
-func (client *Client) Sync(ctx context.Context, serviceMethod string, args, reply any) error {
-	call := client.Async(serviceMethod, args, reply, make(chan *Call, 1))
-	select {
-	case <-ctx.Done(): // 说明是通过context取消的
-		client.removeCall(call.Seq)
-		return errors.New("rpc client: call failed: " + ctx.Err().Error())
-	case c := <-call.Done: // 说明是client任务执行玩取消的
-		return c.Error
-	}
+func DialHTTP(network, address string, opts ...*server.Option) (*Client, error) {
+	return dialTimeout(NewHttpClient, network, address, opts...)
 }
 
 func NewHttpClient(conn net.Conn, opt *server.Option) (*Client, error) {
@@ -279,24 +282,4 @@ func NewHttpClient(conn net.Conn, opt *server.Option) (*Client, error) {
 		err = errors.New("unexpected HTTP response: " + response.Status)
 	}
 	return nil, err
-}
-
-func DialHTTP(network, address string, opts ...*server.Option) (*Client, error) {
-	return dialTimeout(NewHttpClient, network, address, opts...)
-}
-
-// XDial http@10.0.0.1:7001, tcp@10.0.0.1:9999, unix@/tmp/geerpc.sock
-func XDial(rpcAddr string, opts ...*server.Option) (*Client, error) {
-	parts := strings.Split(rpcAddr, "@")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("rpc client err: wrong format '%s', expect protocol@addr", rpcAddr)
-	}
-	protocol, addr := parts[0], parts[1]
-	switch protocol {
-	case "http":
-		return DialHTTP("tcp", addr, opts...)
-	default:
-		// tcp, unix or other transport protocol
-		return Dial(protocol, addr, opts...)
-	}
 }
