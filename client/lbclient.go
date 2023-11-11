@@ -2,9 +2,15 @@ package client
 
 import (
 	"context"
+	"fmt"
+	"go-rpc/registry"
 	"go-rpc/server"
+	"log"
+	"net/http"
 	"reflect"
+	"strings"
 	"sync"
+	"time"
 )
 
 // LoadBalanceClient 支持负载均衡的客户端
@@ -109,4 +115,90 @@ func (c *LoadBalanceClient) Broadcast(ctx context.Context, serviceMethod string,
 		wg.Wait()
 	}
 	return e
+}
+
+type RegistryDiscovery struct {
+	*MultiServerDiscovery               // 注册中心注册的服务
+	registry              string        // 注册中心的地址
+	timeout               time.Duration // 注册中心的服务列表的过期时间
+	lastUpdate            time.Time     // 从注册中心更新服务列表的时间
+}
+
+const (
+	DefaultTimeout = time.Second * 10
+)
+
+func NewRegistryDiscovery(addr string, timeout time.Duration) *RegistryDiscovery {
+	if timeout == 0 {
+		timeout = DefaultTimeout
+	}
+	r := &RegistryDiscovery{
+		MultiServerDiscovery: NewMultiServerDiscovery(make([]string, 0)),
+		registry:             addr,
+		timeout:              timeout,
+	}
+	return r
+}
+
+func (r *RegistryDiscovery) Update(servers []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.servers = servers
+	r.lastUpdate = time.Now()
+	return nil
+}
+
+func (r *RegistryDiscovery) Refresh() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// 上次更新后还没到超时时间就不更新
+	if time.Now().Before(r.lastUpdate.Add(r.timeout)) {
+		return nil
+	}
+
+	log.Printf("rpc registry: refresh servers from registry: %s\n", r.registry)
+	resp, err := http.Get(r.registry)
+	if err != nil {
+		log.Println("rpc registry refresh err:", err)
+		return err
+	}
+	servers := strings.Split(resp.Header.Get(registry.DefaultHeader), ",")
+	r.servers = make([]string, 0, len(servers))
+	for _, server := range servers {
+		if strings.TrimSpace(server) != "" {
+			r.servers = append(r.servers, strings.TrimSpace(server))
+		}
+	}
+	r.lastUpdate = time.Now()
+	return nil
+}
+
+func (r *RegistryDiscovery) Get(mode SelectMode) (string, error) {
+	if err := r.Refresh(); err != nil {
+		return "", err
+	}
+	return r.MultiServerDiscovery.Get(mode)
+}
+
+func (r *RegistryDiscovery) GetAll() ([]string, error) {
+	if err := r.Refresh(); err != nil {
+		return nil, err
+	}
+	return r.MultiServerDiscovery.GetAll()
+}
+
+func XDial(rpcAddr string, opts ...*server.Option) (*Client, error) {
+	parts := strings.Split(rpcAddr, "@")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client err: wrong format '%s', expect protocol@addr", rpcAddr)
+	}
+	protocol, addr := parts[0], parts[1]
+	switch protocol {
+	case "http":
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		// tcp, unix or other transport protocol
+		return Dial(protocol, addr, opts...)
+	}
 }
