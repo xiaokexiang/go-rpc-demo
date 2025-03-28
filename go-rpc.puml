@@ -1,0 +1,76 @@
+@startuml
+namespace codec {
+    interface Codec  {
+        + ReadHeader( *Header) error
+        + ReadBody( any) error
+        + Write( *Header,  any) error
+
+    }
+    class GobCodec << (S,Aquamarine) >> {
+        - conn io.ReadWriteCloser
+        - buf *bufio.Writer
+        - dec *gob.Decoder
+        - enc *gob.Encoder
+
+        + ReadHeader(h *Header) error
+        + ReadBody(body any) error
+        + Write(h *Header, body any) error
+        + Close() error
+
+    }
+    class Header << (S,Aquamarine) >> {
+        + ServiceMethod string
+        + Seq uint64
+        + Error string
+
+    }
+    class JsonCodec << (S,Aquamarine) >> {
+        - conn io.ReadWriteCloser
+        - buf *bufio.Writer
+        - dec *json.Decoder
+        - enc *json.Encoder
+
+        + ReadHeader(h *Header) error
+        + ReadBody(body any) error
+        + Write(h *Header, body any) error
+        + Close() error
+
+    }
+    class codec.Func << (T, #FF7700) >>  {
+    }
+    class codec.Type << (T, #FF7700) >>  {
+    }
+    class "<font color=blue>func</font>(io.ReadWriteCloser) Codec" as fontcolorbluefuncfontioReadWriteCloserCodec {
+        'This class was created so that we can correctly have an alias pointing to this name. Since it contains dots that can break namespaces
+    }
+}
+
+"codec.Codec" <|-- "codec.GobCodec"
+"codec.Codec" <|-- "codec.JsonCodec"
+
+namespace server {
+    class Option << (S,Aquamarine) >> {
+        + MagicNum int
+        + CodecType codec.Type
+
+    }
+    class Server << (S,Aquamarine) >> {
+        - accept(listen net.Listener) 
+        - serverConn(conn io.ReadWriteCloser) 
+        - serverCodec(c codec.Codec) 
+        - readRequest(c codec.Codec) (*request, error)
+        - handleRequest(c codec.Codec, r *request, sending *sync.Mutex, wg *sync.WaitGroup) 
+        - sendResponse(c codec.Codec, h *codec.Header, body any, sending *sync.Mutex) 
+
+    }
+    class request << (S,Aquamarine) >> {
+        - h *codec.Header
+        - arg reflect.Value
+
+    }
+}
+
+
+"__builtin__.string" #.. "codec.Type"
+"codec.fontcolorbluefuncfontioReadWriteCloserCodec" #.. "codec.Func"
+@enduml
