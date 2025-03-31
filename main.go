@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"go-rpc/client"
 	"go-rpc/codec"
 	"go-rpc/server"
 	"io"
 	"log"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -40,8 +42,21 @@ func sendMessage(conn io.ReadWriteCloser) {
 func main() {
 	addr := make(chan string)
 	go startServer(addr)
-	conn, _ := net.Dial("tcp", <-addr)
-	defer func() { _ = conn.Close() }()
+	c, _ := client.Dial("tcp", <-addr)
+	defer func() { _ = c.Close() }()
 	time.Sleep(time.Second) // wait client connected to server
-	sendMessage(conn)
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			args := fmt.Sprintf("Client Req %d", i)
+			var reply string
+			if err := c.SendSync("Foo.Sum", args, &reply); err != nil {
+				log.Fatal("call Foo.Sum error:", err)
+			}
+			log.Println("reply:", reply)
+		}(i)
+	}
+	wg.Wait()
 }

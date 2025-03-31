@@ -91,7 +91,7 @@ func (s *Server) serverCodec(c codec.Codec) {
 			if request == nil {
 				break // 没有请求头,就关闭连接
 			}
-			request.h.Error = err.Error()
+			request.h.Error = err.Error()                     // 返回解析请求头的错误给客户端,客户端会根据此属性判断
 			s.sendResponse(c, request.h, struct{}{}, sending) // 发送错误的信息响应
 			continue                                          // 解析请求头失败
 		}

@@ -1,4 +1,42 @@
 @startuml
+namespace client {
+    class Call << (S,Aquamarine) >> {
+        + Seq uint64
+        + ServiceMethod string
+        + Args any
+        + Reply any
+        + Error error
+        + Done <font color=blue>chan</font> *Call
+
+        - done() 
+
+    }
+    class Client << (S,Aquamarine) >> {
+        - c codec.Codec
+        - option *server.Option
+        - sending sync.Mutex
+        - header codec.Header
+        - mu sync.Mutex
+        - seq uint64
+        - pending <font color=blue>map</font>[uint64]*Call
+        - closing bool
+        - shutdown bool
+
+        - available() bool
+        - registryCall(call *Call) (uint64, error)
+        - removeCall(seq uint64) *Call
+        - terminateCall(err error) 
+        - receive() 
+        - send(call *Call) 
+        - sendAsync(serviceMethod string, args any, reply any, done <font color=blue>chan</font> *Call) *Call
+        - sendSync(serviceMethod string, args any, reply any) error
+
+        + Close() error
+
+    }
+}
+
+
 namespace codec {
     interface Codec  {
         + ReadHeader( *Header) error
