@@ -6,6 +6,7 @@ import (
 	"go-rpc/client"
 	"go-rpc/codec"
 	"go-rpc/server"
+	_struct "go-rpc/struct"
 	"io"
 	"log"
 	"net"
@@ -14,6 +15,11 @@ import (
 )
 
 func startServer(addr chan string) {
+	var foo _struct.Foo
+	err := server.Register(&foo)
+	if err != nil {
+		log.Fatal("register error:", err)
+	}
 	listen, err := net.Listen("tcp", ":0") // 表示选择随即端口
 	if err != nil {
 		log.Fatal("Start Server error: ", err)
@@ -50,12 +56,12 @@ func main() {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			args := fmt.Sprintf("Client Req %d", i)
-			var reply string
+			args := &_struct.Args{Num1: i, Num2: i * i}
+			var reply int
 			if err := c.SendSync("Foo.Sum", args, &reply); err != nil {
 				log.Fatal("call Foo.Sum error:", err)
 			}
-			log.Println("reply:", reply)
+			log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)
 		}(i)
 	}
 	wg.Wait()

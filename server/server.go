@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -49,6 +50,7 @@ func (s *Server) accept(listen net.Listener) {
 var defaultServer = &Server{}
 
 type Server struct {
+	serviceMap sync.Map // 线程安全Map存储service
 }
 
 /*
@@ -105,20 +107,33 @@ func (s *Server) serverCodec(c codec.Codec) {
 type request struct {
 	h          *codec.Header
 	arg, reply reflect.Value
+	mType      *methodType
+	svc        *service
 }
 
 func (s *Server) readRequest(c codec.Codec) (*request, error) {
 	var header codec.Header
-	if err := c.ReadHeader(&header); err != nil { // 解析请求头
+	var err error
+	if err = c.ReadHeader(&header); err != nil { // 解析请求头
 		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 			log.Println("RPC [ReadRequest] Read Header error: ", err)
 		}
 		return nil, err
 	}
 	req := &request{h: &header}
-	req.arg = reflect.New(reflect.TypeOf(""))
-	if err := c.ReadBody(req.arg.Interface()); err != nil {
+	req.svc, req.mType, err = s.findService(header.ServiceMethod)
+	if err != nil {
+		return req, err
+	}
+	req.arg = req.mType.newArgv()
+	req.reply = req.mType.newReply()
+	argvi := req.arg.Interface()
+	if req.arg.Type().Kind() != reflect.Pointer { // arg转为指针类型
+		argvi = req.arg.Addr().Interface()
+	}
+	if err := c.ReadBody(argvi); err != nil {
 		log.Println("RPC [ReadRequest] Read arg error: ", err)
+		return req, err
 	}
 	return req, nil
 }
@@ -126,8 +141,12 @@ func (s *Server) readRequest(c codec.Codec) (*request, error) {
 // 服务端输出请求的响应到客户端
 func (s *Server) handleRequest(c codec.Codec, r *request, sending *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
-	log.Println(r.h, r.arg.Elem())
-	r.reply = reflect.ValueOf(fmt.Sprintf("RPC resp: %d", r.h.Seq))
+	err := r.svc.call(r.mType, r.arg, r.reply)
+	if err != nil {
+		r.h.Error = err.Error()
+		s.sendResponse(c, r.h, errors.New(fmt.Sprintf("RPC server call method error: %s", err)), sending)
+		return
+	}
 	s.sendResponse(c, r.h, r.reply.Interface(), sending)
 }
 
@@ -138,4 +157,38 @@ func (s *Server) sendResponse(c codec.Codec, h *codec.Header, body any, sending 
 	if err := c.Write(h, body); err != nil {
 		log.Println("RPC [SendResponse] Write Response error: ", err)
 	}
+}
+
+// Register 将结构体注册为service到server属性中
+func (s *Server) Register(structure any) error {
+	service := newService(structure)
+	if _, dup := s.serviceMap.LoadOrStore(service.name, service); dup {
+		return errors.New("RPC: service already defined: " + service.name)
+	}
+	return nil
+}
+
+func Register(structure any) error {
+	return defaultServer.Register(structure)
+}
+
+// serviceMethod: Foo.Sum
+func (s *Server) findService(serviceMethod string) (svc *service, mType *methodType, err error) {
+	m := strings.LastIndex(serviceMethod, ".")
+	if m < 0 {
+		err = errors.New("RPC server: service/method request ill-formed: " + serviceMethod)
+		return
+	}
+	serviceName, methodName := serviceMethod[:m], serviceMethod[m+1:]
+	svc1, ok := s.serviceMap.Load(serviceName)
+	if !ok {
+		err = errors.New("RPC server: can't find service " + serviceName)
+		return
+	}
+	svc = svc1.(*service)
+	mType = svc.method[methodName]
+	if mType == nil {
+		err = errors.New("rpc server: can't find method " + methodName)
+	}
+	return
 }

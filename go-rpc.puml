@@ -1,4 +1,18 @@
 @startuml
+namespace _struct {
+    class Args << (S,Aquamarine) >> {
+        + Num1 int
+
+    }
+    class Foo << (S,Aquamarine) >> {
+        + Sum(args Args, reply *int) error
+
+    }
+    class _struct.Foo << (T, #FF7700) >>  {
+    }
+}
+
+
 namespace client {
     class Call << (S,Aquamarine) >> {
         + Seq uint64
@@ -28,10 +42,10 @@ namespace client {
         - terminateCall(err error) 
         - receive() 
         - send(call *Call) 
-        - sendAsync(serviceMethod string, args any, reply any, done <font color=blue>chan</font> *Call) *Call
-        - sendSync(serviceMethod string, args any, reply any) error
 
         + Close() error
+        + SendAsync(serviceMethod string, args any, reply any, done <font color=blue>chan</font> *Call) *Call
+        + SendSync(serviceMethod string, args any, reply any) error
 
     }
 }
@@ -93,22 +107,53 @@ namespace server {
 
     }
     class Server << (S,Aquamarine) >> {
+        - serviceMap sync.Map
+
         - accept(listen net.Listener) 
         - serverConn(conn io.ReadWriteCloser) 
         - serverCodec(c codec.Codec) 
         - readRequest(c codec.Codec) (*request, error)
         - handleRequest(c codec.Codec, r *request, sending *sync.Mutex, wg *sync.WaitGroup) 
         - sendResponse(c codec.Codec, h *codec.Header, body any, sending *sync.Mutex) 
+        - findService(serviceMethod string) (*service, *methodType, error)
+
+        + Register(structure any) error
+
+    }
+    class methodType << (S,Aquamarine) >> {
+        - method reflect.Method
+        - numCalls uint64
+
+        + ArgType reflect.Type
+        + ReplyType reflect.Type
+
+        - newArgv() reflect.Value
+        - newReply() reflect.Value
+
+        + NumCalls() uint64
 
     }
     class request << (S,Aquamarine) >> {
         - h *codec.Header
         - arg reflect.Value
+        - mType *methodType
+        - svc *service
+
+    }
+    class service << (S,Aquamarine) >> {
+        - name string
+        - typ reflect.Type
+        - self reflect.Value
+        - method <font color=blue>map</font>[string]*methodType
+
+        - registryMethods() 
+        - call(m *methodType, argv reflect.Value, reply reflect.Value) error
 
     }
 }
 
 
+"__builtin__.int" #.. "_struct.Foo"
 "__builtin__.string" #.. "codec.Type"
 "codec.fontcolorbluefuncfontioReadWriteCloserCodec" #.. "codec.Func"
 @enduml
