@@ -11,11 +11,14 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Option struct {
-	MagicNum  int        // mark this is a rpc request
-	CodecType codec.Type // choose which codec to encode body
+	MagicNum       int           // mark this is a rpc request
+	CodecType      codec.Type    // choose which codec to encode body
+	ConnectTimeout time.Duration // 连接超时
+	HandleTimeout  time.Duration // 处理超时, 0表示不限制
 }
 
 const MagicNum = 0x3bef5c
@@ -25,8 +28,9 @@ const MagicNum = 0x3bef5c
 // | <------      固定 JSON 编码      ------>  | <-------   编码方式由 CodeType 决定   ------->|
 // | Option | Header1 | Body1 | Header2 | Body2 | ...
 var DefaultOption = &Option{
-	MagicNum:  MagicNum,
-	CodecType: codec.GobType,
+	MagicNum:       MagicNum,
+	CodecType:      codec.GobType,
+	ConnectTimeout: 10 * time.Second,
 }
 
 // Accept accepts connections on the listener and serves requests
@@ -77,13 +81,13 @@ func (s *Server) serverConn(conn io.ReadWriteCloser) {
 		log.Println("RPC [ServerConn] Invalid CodecType: ", opt.CodecType)
 		return
 	}
-	s.serverCodec(f(conn))
+	s.serverCodec(f(conn), &opt)
 }
 
 /*
 1. 解析请求 不符合请求 发送响应 2. 处理请求
 */
-func (s *Server) serverCodec(c codec.Codec) {
+func (s *Server) serverCodec(c codec.Codec, opt *Option) {
 	sending := new(sync.Mutex) // 保证响应依次发送
 	wg := new(sync.WaitGroup)  // 保证所有请求被处理
 
@@ -98,7 +102,7 @@ func (s *Server) serverCodec(c codec.Codec) {
 			continue                                          // 解析请求头失败
 		}
 		wg.Add(1)
-		go s.handleRequest(c, request, sending, wg)
+		go s.handleRequest(c, request, sending, wg, opt.HandleTimeout)
 	}
 	wg.Wait()
 	_ = c.Close()
@@ -139,15 +143,35 @@ func (s *Server) readRequest(c codec.Codec) (*request, error) {
 }
 
 // 服务端输出请求的响应到客户端
-func (s *Server) handleRequest(c codec.Codec, r *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (s *Server) handleRequest(c codec.Codec, r *request, sending *sync.Mutex, wg *sync.WaitGroup, handleTimeout time.Duration) {
 	defer wg.Done()
-	err := r.svc.call(r.mType, r.arg, r.reply)
-	if err != nil {
-		r.h.Error = err.Error()
-		s.sendResponse(c, r.h, errors.New(fmt.Sprintf("RPC server call method error: %s", err)), sending)
+	called := make(chan struct{}) // 表示执行是否堵塞
+	sent := make(chan struct{})
+	go func() {
+		err := r.svc.call(r.mType, r.arg, r.reply)
+		called <- struct{}{} // 执行到这里说明反射执行方法没有堵塞
+		if err != nil {
+			r.h.Error = err.Error()
+			s.sendResponse(c, r.h, errors.New(fmt.Sprintf("RPC server call method error: %s", err)), sending)
+			sent <- struct{}{}
+			return
+		}
+		s.sendResponse(c, r.h, r.reply.Interface(), sending)
+		sent <- struct{}{}
+	}()
+	if handleTimeout == 0 {
+		<-called
+		<-sent
 		return
 	}
-	s.sendResponse(c, r.h, r.reply.Interface(), sending)
+	select {
+	case <-time.After(handleTimeout):
+		r.h.Error = fmt.Sprintf("RPC [Server] handle timeout: expect within %s", handleTimeout)
+		s.sendResponse(c, r.h, struct{}{}, sending)
+	case <-called: // 进入这里说明反射执行没有问题
+		<-sent
+	}
+
 }
 
 // 调用codec的实现类的write的方法输出

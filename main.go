@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"go-rpc/client"
@@ -58,7 +59,8 @@ func main() {
 			defer wg.Done()
 			args := &_struct.Args{Num1: i, Num2: i * i}
 			var reply int
-			if err := c.SendSync("Foo.Sum", args, &reply); err != nil {
+			ctx, _ := context.WithTimeout(context.Background(), server.DefaultOption.ConnectTimeout) // 基于context实现
+			if err := c.SendSync(ctx, "Foo.Sum", args, &reply); err != nil {
 				log.Fatal("call Foo.Sum error:", err)
 			}
 			log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)

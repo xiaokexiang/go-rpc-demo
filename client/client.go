@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // Call 表明一次客户端RPC请求携带的信息
@@ -188,27 +190,50 @@ func parseOptions(opts ...*server.Option) (*server.Option, error) {
 }
 
 func Dial(network, address string, opts ...*server.Option) (client *Client, err error) {
+	return DialTimeout(network, address, opts...)
+}
+
+type clientRes struct {
+	client *Client
+	err    error
+}
+
+func DialTimeout(network, address string, opts ...*server.Option) (client *Client, err error) {
 	opt, err := parseOptions(opts...)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.Dial(network, address)
+	conn, err := net.DialTimeout(network, address, opt.ConnectTimeout)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if client == nil {
+		if err != nil {
 			_ = conn.Close()
 		}
 	}()
-	return NewClient(conn, opt)
+	ch := make(chan clientRes)
+	go func() {
+		client, err := NewClient(conn, opt)
+		ch <- clientRes{client: client, err: err}
+	}()
+	if opt.ConnectTimeout == 0 {
+		result := <-ch
+		return result.client, result.err
+	}
+	select {
+	case <-time.After(opt.ConnectTimeout): // 等待超时
+		return nil, fmt.Errorf("RPC [Client]: connect timeout: expect within %s", opt.ConnectTimeout)
+	case result := <-ch:
+		return result.client, result.err
+	}
 }
 
 func (c *Client) SendAsync(serviceMethod string, args, reply any, done chan *Call) *Call {
 	if done == nil {
 		done = make(chan *Call, 10)
 	} else if cap(done) == 0 {
-		log.Panic("rpc client: done channel is unbuffered")
+		log.Panic("RPC [Client]: done channel is unbuffered")
 	}
 	call := &Call{
 		ServiceMethod: serviceMethod,
@@ -220,7 +245,13 @@ func (c *Client) SendAsync(serviceMethod string, args, reply any, done chan *Cal
 	return call
 }
 
-func (c *Client) SendSync(serviceMethod string, args, reply any) error {
-	call := <-c.SendAsync(serviceMethod, args, reply, make(chan *Call, 1)).Done
-	return call.Error
+func (c *Client) SendSync(ctx context.Context, serviceMethod string, args, reply any) error {
+	call := c.SendAsync(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	case <-ctx.Done(): // 基于context实现timeout
+		c.removeCall(call.Seq)
+		return errors.New("RPC [Client]: call failed " + ctx.Err().Error())
+	case call := <-call.Done: // 作用域不同call可以再次赋值
+		return call.Error
+	}
 }
