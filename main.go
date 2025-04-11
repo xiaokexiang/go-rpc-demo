@@ -11,11 +11,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
 
-func startServer(addr chan string) {
+func startServer(addr chan string, h bool) {
 	var foo _struct.Foo
 	err := server.Register(&foo)
 	if err != nil {
@@ -27,7 +28,12 @@ func startServer(addr chan string) {
 	}
 	log.Println("Start Server Success on: ", listen.Addr())
 	addr <- listen.Addr().String() // send addr to client
-	server.Accept(listen)
+	if h {
+		server.HandleHTTP()
+		_ = http.Serve(listen, nil)
+	} else {
+		server.Accept(listen)
+	}
 }
 
 func sendMessage(conn io.ReadWriteCloser) {
@@ -46,10 +52,13 @@ func sendMessage(conn io.ReadWriteCloser) {
 	}
 }
 
-func main() {
-	addr := make(chan string)
-	go startServer(addr)
-	c, _ := client.Dial("tcp", <-addr)
+func call(addr chan string, http bool) {
+	var c *client.Client
+	if http {
+		c, _ = client.DialHTTP("tcp", <-addr)
+	} else {
+		c, _ = client.Dial("tcp", <-addr)
+	}
 	defer func() { _ = c.Close() }()
 	time.Sleep(time.Second) // wait client connected to server
 	var wg sync.WaitGroup
@@ -67,4 +76,10 @@ func main() {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func main() {
+	addr := make(chan string)
+	go call(addr, false)
+	startServer(addr, false) // startServer在后,阻塞主goroutine
 }

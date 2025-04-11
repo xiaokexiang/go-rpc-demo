@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -35,7 +36,7 @@ var DefaultOption = &Option{
 
 // Accept accepts connections on the listener and serves requests
 func Accept(listen net.Listener) {
-	defaultServer.accept(listen)
+	DefaultServer.accept(listen)
 }
 
 // Accept Listener 定义了一个通用的网络监听器，用于接收流式协议（如 TCP、Unix Socket）的连接请求
@@ -51,7 +52,7 @@ func (s *Server) accept(listen net.Listener) {
 	}
 }
 
-var defaultServer = &Server{}
+var DefaultServer = &Server{}
 
 type Server struct {
 	serviceMap sync.Map // 线程安全Map存储service
@@ -193,7 +194,7 @@ func (s *Server) Register(structure any) error {
 }
 
 func Register(structure any) error {
-	return defaultServer.Register(structure)
+	return DefaultServer.Register(structure)
 }
 
 // serviceMethod: Foo.Sum
@@ -215,4 +216,36 @@ func (s *Server) findService(serviceMethod string) (svc *service, mType *methodT
 		err = errors.New("rpc server: can't find method " + methodName)
 	}
 	return
+}
+
+const (
+	Connected        = "200 Connected to RPC"
+	DefaultRpcPath   = "/_rpc_"
+	DefaultDebugPath = "/debug/rpc"
+)
+
+// ServerHttp 基于HTTP的connect连接,然后再传递options
+func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "CONNECT" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_, _ = io.WriteString(w, "405 must CONNECT\n")
+		return
+	}
+	conn, _, err := w.(http.Hijacker).Hijack() // 获取底层实际的连接
+	if err != nil {
+		log.Print("rpc hijacking ", req.RemoteAddr, ": ", err.Error())
+		return
+	}
+	_, _ = io.WriteString(conn, "HTTP/1.0 "+Connected+"\n\n")
+	s.serverConn(conn)
+}
+
+func (s *Server) HandleHTTP() {
+	http.Handle(DefaultRpcPath, s) // 注册路由
+	http.Handle(DefaultDebugPath, &debugHTTP{s})
+}
+
+func HandleHTTP() {
+	DefaultServer.HandleHTTP()
 }
