@@ -12,7 +12,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -282,19 +281,4 @@ type newClientFunc func(conn net.Conn, opt *server.Option) (*Client, error)
 
 func DialHTTP(network, address string, opts ...*server.Option) (*Client, error) {
 	return DialTimeout(NewHTTPClient, network, address, opts...)
-}
-
-func XDial(address string, opts ...*server.Option) (client *Client, err error) {
-	parts := strings.Split(address, "@")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("rpc client err: wrong format '%s', expect protocol@addr", address)
-	}
-	protocol, addr := parts[0], parts[1]
-	switch protocol {
-	case "http":
-		return DialHTTP("tcp", addr, opts...)
-	default:
-		// tcp, unix or other transport protocol
-		return Dial(protocol, addr, opts...)
-	}
 }

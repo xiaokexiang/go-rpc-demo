@@ -36,12 +36,12 @@ var DefaultOption = &Option{
 
 // Accept accepts connections on the listener and serves requests
 func Accept(listen net.Listener) {
-	DefaultServer.accept(listen)
+	DefaultServer.Accept(listen)
 }
 
 // Accept Listener 定义了一个通用的网络监听器，用于接收流式协议（如 TCP、Unix Socket）的连接请求
 // for循环等待socket建立, 处理交给子协程
-func (s *Server) accept(listen net.Listener) {
+func (s *Server) Accept(listen net.Listener) {
 	for {
 		conn, err := listen.Accept()
 		if err != nil {
@@ -52,7 +52,11 @@ func (s *Server) accept(listen net.Listener) {
 	}
 }
 
-var DefaultServer = &Server{}
+var DefaultServer = NewServer()
+
+func NewServer() *Server {
+	return &Server{}
+}
 
 type Server struct {
 	serviceMap sync.Map // 线程安全Map存储service
