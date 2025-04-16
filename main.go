@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"go-rpc/client"
 	"go-rpc/codec"
+	"go-rpc/registry"
 	"go-rpc/server"
 	_struct "go-rpc/struct"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -46,12 +48,20 @@ func foo(xc *client.XClient, ctx context.Context, typ, serviceMethod string, arg
 	}
 }
 
-func startServer(addrCh chan string) {
+func startRegistry(wg *sync.WaitGroup) {
+	l, _ := net.Listen("tcp", ":9999")
+	registry.HandleHTTP()
+	wg.Done()
+	_ = http.Serve(l, nil)
+}
+
+func startServer(registryAddr string, wg *sync.WaitGroup) {
 	var foo Foo
 	l, _ := net.Listen("tcp", ":0")
 	newServer := server.NewServer()
 	_ = newServer.Register(&foo)
-	addrCh <- l.Addr().String()
+	registry.Heartbeat(registryAddr, "tcp@"+l.Addr().String(), 0)
+	wg.Done()
 	newServer.Accept(l)
 }
 
@@ -131,18 +141,55 @@ func broadcast(addr1, addr2 string) {
 	wg.Wait()
 }
 
+func call3(registry string) {
+	d := server.NewRegistryDiscovery(registry, 0)
+	xc := client.NewXClient(d, server.Random, nil)
+	defer func() { _ = xc.Close() }()
+	// send request & receive response
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			foo(xc, context.Background(), "call", "Foo.Sum", &Args{Num1: i, Num2: i * i})
+		}(i)
+	}
+	wg.Wait()
+}
+
+func broadcast2(registry string) {
+	d := server.NewRegistryDiscovery(registry, 0)
+	xc := client.NewXClient(d, server.Random, nil)
+	defer func() { _ = xc.Close() }()
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			foo(xc, context.Background(), "broadcast", "Foo.Sum", &Args{Num1: i, Num2: i * i})
+			// expect 2 - 5 timeout
+			//ctx, _ := context.WithTimeout(context.Background(), time.Second*2)
+			//foo(xc, ctx, "broadcast", "Foo.Sleep", &Args{Num1: i, Num2: i * i})
+		}(i)
+	}
+	wg.Wait()
+}
+
 func main() {
 	log.SetFlags(0)
-	ch1 := make(chan string)
-	ch2 := make(chan string)
-	// start two servers
-	go startServer(ch1)
-	go startServer(ch2)
-
-	addr1 := <-ch1
-	addr2 := <-ch2
+	registryAddr := "http://localhost:9999/_geerpc_/registry"
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go startRegistry(&wg)
+	wg.Wait()
 
 	time.Sleep(time.Second)
-	call2(addr1, addr2)
-	broadcast(addr1, addr2)
+	wg.Add(2)
+	go startServer(registryAddr, &wg)
+	go startServer(registryAddr, &wg)
+	wg.Wait()
+
+	time.Sleep(time.Second)
+	call3(registryAddr)
+	broadcast2(registryAddr)
 }
